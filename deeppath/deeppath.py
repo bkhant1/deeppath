@@ -3,6 +3,7 @@ Support some XPath-like syntax for accessing nested structures
 """
 
 from typing import Sequence, MutableSequence, Mapping
+from collections import namedtuple
 import re
 
 
@@ -26,7 +27,106 @@ def _get_repetition_index(key):
         return key, int(repetition_number)
 
 
+ThroughListFlat = namedtuple("ThroughListFlat", [])
+ThroughListIndexed = namedtuple("ThroughListIndexed", ['index'])
+ThroughDictFlat = namedtuple("ThroughDictFlat", [])
+ThroughDictKey = namedtuple("ThroughDictKey", ['key'])
+
+
+def make_command(str_token):
+    if str_token == "*":
+        return ThroughDictFlat()
+    elif str_token == "[*]":
+        return ThroughListFlat()
+    else:
+        match_list_index = re.match(r"\[(-?\d+)\]", str_token)
+        if match_list_index:
+            return ThroughListIndexed(int(match_list_index.group(1)))
+        else:
+            return ThroughDictKey(str_token)
+
+
+def read_path(path):
+    if path[0] == "/":
+        path = path[1:]
+    path_commands = re.sub(r"([^/])(\[(?:\*|-?\d+)\])", r"\g<1>/\g<2>", path).split("/")
+    return list(map(make_command, path_commands))
+
+
+def go_through_dict_key(key, list_of_items):
+    result = []
+    for item in list_of_items:
+        if isinstance(item, Mapping) and key in item:
+            result.append(item[key])
+    return result
+
+
+def go_through_list_index(index, list_of_items):
+    result = []
+    for item in list_of_items:
+        if isinstance(item, Sequence) and len(item) > index:
+            result.append(item[index])
+    return result
+
+
+def go_through_list_flat(list_of_items):
+    result = []
+    for item in list_of_items:
+        if isinstance(item, Sequence):
+            result += [x for x in item]
+    return result
+
+
+def go_through_dict_flat(list_of_items):
+    result = []
+    for item in list_of_items:
+        if isinstance(item, Mapping):
+            result += [x for x in item.values()]
+    return result
+
+
 def dget(data, path, default=None):
+
+    def process_commands(commands, data):
+        if not commands:
+            return data
+        else:
+            next_command = commands[0]
+            if isinstance(next_command, ThroughDictKey):
+                return process_commands(
+                    commands[1:],
+                    go_through_dict_key(next_command.key, data)
+                )
+            elif isinstance(next_command, ThroughListIndexed):
+                return process_commands(
+                    commands[1:],
+                    go_through_list_index(next_command.index, data)
+                )
+            elif isinstance(next_command, ThroughListFlat):
+                return process_commands(
+                    commands[1:],
+                    go_through_list_flat(data)
+                )
+            elif isinstance(next_command, ThroughDictFlat):
+                return process_commands(
+                    commands[1:],
+                    go_through_dict_flat(data)
+                )
+            else:
+                return []
+
+    commands = read_path(path)
+    result_list = process_commands(commands, [data])
+
+    if len(result_list) == 0:
+        return default
+    elif not ThroughListFlat() in commands and not ThroughDictFlat() in commands:
+        return result_list[0]
+    else:
+        return result_list
+
+
+def dget2(data, path, default=None):
     """
     Gets a deeply nested value in a dictionary.
     Returns default if provided when any key doesn't match.
